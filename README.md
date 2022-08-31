@@ -138,6 +138,15 @@ $ cat mysql.yaml && cat wordpress.yaml
 ```markup
 $ kubectl apply -f mysql.yaml $ kubectl apply -f wordpress.yaml
 ```
+# Setting up NFS for shared storage on Kubernetes
+
+Note: NFS is still used with cloud-native applications where multi-node write access is required. OpenEBS and Rook to ReadWriteMany (RWX) accessible persistent volumes for stateful workloads that require shared storage on Kubernetes.
+
+## Technical Requirements
+
+For this recipe, we need to have either rook or openebs installed as an orchestrator. Make sure that you have a Kubernetes cluster ready and kubectl configured to manage the cluster resources.
+
+
 
 4.  Confirm the persistent volumes created:
 
@@ -354,6 +363,187 @@ apiVersion: openebs.io/v1alpha1kind: StoragePoolmetadata:  name: my-pool  type: 
 
 When ephemeral storage is used, the OpenEBS Jiva storage engine uses the /var/openebs directory on every available node to create replica sparse files. If you would like to change the default or create a new StoragePool resource, you can create a new storage pool and set a custom path.
 
+Installing NFS prerequisites
+Installing an NFS provider using a Rook NFS operator
+Using a Rook NFS operator storage class to create dynamic NFS PVs
+Installing an NFS provider using OpenEBS
+Using the OpenEBS operator storage class to create dynamic NFS PVs
+Installing NFS prerequisites
+To be able to mount NFS volumes, NFS client packages need to be preinstalled on all worker nodes where you plan to have NFS-mounted pods:
 
+If you are using Ubuntu, install nfs-common on all worker nodes:
+$ sudo apt install -y nfs-common
+
+Copy
+If using CentOS, install nfs-common on all worker nodes:
+$ yum install nfs-utils
+
+Copy
+Now we have nfs-utils installed on our worker nodes and are ready to get the NFS server to deploy.
+
+Installing an NFS provider using a Rook NFS operator
+Let's perform the following steps to get an NFS provider functional using the Rook NFS provider option:
+
+Clone the Rook repository:
+$ git clone https://github.com/rook/rook.git
+$ cd rook/cluster/examples/kubernetes/nfs/
+
+Copy
+Deploy the Rook NFS operator:
+$ kubectl create -f operator.yaml
+
+Copy
+Confirm that the operator is running:
+$ kubectl get pods -n rook-nfs-system
+NAME READY STATUS RESTARTS AGE
+rook-nfs-operator-54cf68686c-f66f5 1/1 Running 0 51s
+rook-nfs-provisioner-79fbdc79bb-hf9rn 1/1 Running 0 51s
+
+Copy
+Create a namespace, rook-nfs:
+$ cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+ name: rook-nfs
+EOF
+
+Copy
+Make sure that you have defined your preferred storage provider as the default storage class. In this recipe, we are using openebs-cstor-default, defined in persistent storage using the OpenEBS recipe.
+Create a PVC:
+$ cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-default-claim
+  namespace: rook-nfs
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+Copy
+Create the NFS instance:
+$ cat <<EOF | kubectl apply -f -
+apiVersion: nfs.rook.io/v1alpha1
+kind: NFSServer
+metadata:
+  name: rook-nfs
+  namespace: rook-nfs
+spec:
+  serviceAccountName: rook-nfs
+  replicas: 1
+  exports:
+  - name: share1
+    server:
+      accessMode: ReadWrite
+      squash: "none"
+    persistentVolumeClaim:
+      claimName: nfs-default-claim
+  annotations:
+  # key: value
+EOF
+
+Copy
+Verify that the NFS pod is in the Running state:
+$ kubectl get pod -l app=rook-nfs -n rook-nfs 
+NAME       READY  STATUS  RESTARTS AGE
+rook-nfs-0 1/1    Running 0        2m
+
+Copy
+By observing the preceding command, an NFS server instance type will be created.
+
+Using a Rook NFS operator storage class to create dynamic NFS PVs
+NFS is used in the Kubernetes environment on account of its ReadWriteMany capabilities for the application that requires access to the same data at the same time. In this recipe, we will perform the following steps to dynamically create an NFS-based persistent volume:
+
+Create Rook NFS storage classes using exportName, nfsServerName, and nfsServerNamespace from the Installing an NFS provider using a Rook NFS operator recipe:
+$ cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  labels:
+    app: rook-nfs
+  name: rook-nfs-share1
+parameters:
+  exportName: share1
+  nfsServerName: rook-nfs
+  nfsServerNamespace: rook-nfs
+provisioner: rook.io/nfs-provisioner
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+EOF
+
+Copy
+Now, you can use the rook-nfs-share1 storage class to create PVCs for applications that require ReadWriteMany access:
+$ cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rook-nfs-pv-claim
+spec:
+  storageClassName: "rook-nfs-share1"
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Mi
+EOF
+
+Copy
+By observing the preceding command, an NFS PV will be created.
+
+Installing an NFS provisioner using OpenEBS
+OpenEBS provides an NFS provisioner that is protected by the underlying storage engine options of OpenEBS. Let's perform the following steps to get an NFS service with OpenEBS up and running:
+
+Clone the examples repository:
+$ git clone https://github.com/k8sdevopscookbook/src.git
+$ cd src/chapter5/openebs
+
+Copy
+In this recipe, we are using the openebs-jiva-default storage class. Review the directory content and apply the YAML file under the NFS directory:
+$ kubectl apply -f nfs
+
+Copy
+List the PVCs and confirm that a PVC named openebspvc has been created:
+$ kubectl get pvc
+NAME       STATUS VOLUME                                   CAPACITY ACCESS MODES STORAGECLASS         AGE
+openebspvc Bound  pvc-9f70c0b4-efe9-4534-8748-95dba05a7327 110G     RWO          openebs-jiva-default 13m
+
+Copy
+Using the OpenEBS NFS provisioner storage class to create dynamic NFS PVs
+Let's perform the following steps to dynamically deploy an NFS PV protected by the OpenEBS storage provider:
+
+List the storage classes, and confirm that openebs-nfs exists:
+$ kubectl get sc
+NAME                            PROVISIONER                  AGE
+openebs-cstor-default (default) openebs.io/provisioner-iscsi 14h
+openebs-device                  openebs.io/local             15h
+openebs-hostpath                openebs.io/local             15h
+openebs-jiva-default            openebs.io/provisioner-iscsi 15h
+openebs-nfs                     openebs.io/nfs               5s
+openebs-snapshot-promoter       volumesnapshot.external-storage.k8s.io/snapshot-promoter 15h
+
+Copy
+Now, you can use the openebs-nfs storage class to create PVCs for applications that require ReadWriteMany access:
+$ cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openebs-nfs-pv-claim
+spec:
+  storageClassName: "openebs-nfs"
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Mi
+EOF
+
+
+Rook NFS operator documentation: https://github.com/rook/rook/blob/master/Documentation/nfs.md
+OpenEBS provisioning read-write-many PVCs: https://docs.openebs.io/docs/next/rwm.html
 
 
