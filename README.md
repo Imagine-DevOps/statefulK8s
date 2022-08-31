@@ -1,6 +1,12 @@
-# statefulK8s
+## Configuring and managing persistent storage
+
 K8s storage solutions that protect state of apps from node/app failures, data sharing, and volume reattachment when pod is rescheduled on a different node.
 
 # Technical Requirements:  
 
 Kubernetes' main command-line tool, kubectl , also use helm where helm charts are available to deploy solutions.
+
+These recipes allow the flexibility of utilizing multiple storage providers using popular storage orchestrator for your applications.
+
+# 1st. Recipe - Rook
+
